@@ -9,6 +9,7 @@ BRANCH="main"
 INSTALL_DIR="$HOME/.wallet"
 BIN_DIR="$INSTALL_DIR/bin"
 MCP_DIR="$INSTALL_DIR/mcp"
+API_ORIGIN="https://api-production-a386.up.railway.app"
 TARBALL_URL="https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz"
 
 # Colors
@@ -143,23 +144,30 @@ case "$SHELL_NAME" in
   *)    PROFILE="$HOME/.profile" ;;
 esac
 
-PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
-
 if [ "$SHELL_NAME" = "fish" ]; then
   PATH_LINE="set -gx PATH $BIN_DIR \$PATH"
+  API_LINE="set -gx WALLET_API_ORIGIN $API_ORIGIN"
+else
+  PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+  API_LINE="export WALLET_API_ORIGIN=\"$API_ORIGIN\""
 fi
 
-if ! grep -q "$BIN_DIR" "$PROFILE" 2>/dev/null; then
+if ! grep -q "WALLET_API_ORIGIN" "$PROFILE" 2>/dev/null; then
   echo "" >> "$PROFILE"
   echo "# Wallet CLI" >> "$PROFILE"
   echo "$PATH_LINE" >> "$PROFILE"
+  echo "$API_LINE" >> "$PROFILE"
+  ok "Added Wallet to PATH and configured API in $PROFILE"
+elif ! grep -q "$BIN_DIR" "$PROFILE" 2>/dev/null; then
+  echo "$PATH_LINE" >> "$PROFILE"
   ok "Added $BIN_DIR to PATH in $PROFILE"
 else
-  ok "PATH already configured"
+  ok "PATH and API already configured"
 fi
 
 # Make wallet available in this session
 export PATH="$BIN_DIR:$PATH"
+export WALLET_API_ORIGIN="$API_ORIGIN"
 
 # --- Done! ---
 
@@ -173,11 +181,10 @@ echo ""
 echo -e "  ${BLUE}1.${NC} Reload your shell:"
 echo -e "     ${YELLOW}source $PROFILE${NC}"
 echo ""
-echo -e "  ${BLUE}2.${NC} Set your API endpoint (ask the person who sent you this):"
-echo -e "     ${YELLOW}export WALLET_API_ORIGIN=https://your-api-url.example.com${NC}"
-echo ""
-echo -e "  ${BLUE}3.${NC} Run setup:"
+echo -e "  ${BLUE}2.${NC} Run setup (opens browser for Google sign-in):"
 echo -e "     ${YELLOW}wallet setup${NC}"
 echo ""
-echo -e "  ${BLUE}4.${NC} Then in Claude Code, just say: ${YELLOW}\"show my balances\"${NC}"
+echo -e "  ${BLUE}3.${NC} Then in Claude Code, just say: ${YELLOW}\"show my balances\"${NC}"
+echo ""
+echo -e "  API: ${BLUE}$API_ORIGIN${NC}"
 echo ""

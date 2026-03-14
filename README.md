@@ -20,13 +20,10 @@ curl -fsSL https://raw.githubusercontent.com/brunoqgalvao/wallet-install/main/in
 # 1. Reload your shell
 source ~/.zshrc  # or ~/.bashrc
 
-# 2. Set your API endpoint
-export WALLET_API_ORIGIN=https://your-api-url.example.com
-
-# 3. Run setup (opens browser for Google sign-in)
+# 2. Run setup (opens browser for Google sign-in)
 wallet setup
 
-# 4. In Claude Code, just say: "show my balances"
+# 3. In Claude Code, just say: "show my balances"
 ```
 
 ## Requirements
