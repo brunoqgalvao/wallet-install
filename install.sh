@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Wallet installer — CLI + Skills for Claude Code
+# Wallet installer — CLI + MCP Server + Skills
 # Usage: curl -fsSL https://raw.githubusercontent.com/brunoqgalvao/wallet-install/main/install.sh | bash
 
 REPO="brunoqgalvao/wallet-install"
@@ -38,8 +38,6 @@ NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
 if [ "$NODE_VERSION" -lt 18 ]; then
   fail "Node.js 18+ is required (found v$(node -v))"
 fi
-
-command -v npm >/dev/null 2>&1 || fail "npm is required"
 
 # --- Download ---
 
@@ -84,21 +82,12 @@ info "Installing MCP server to $MCP_DIR..."
 mkdir -p "$MCP_DIR"
 cp "$SRC_DIR/mcp/index.js" "$MCP_DIR/index.js"
 
-# MCP server needs @modelcontextprotocol/sdk and zod
+# Self-contained bundle — no npm install needed
 cat > "$MCP_DIR/package.json" << 'PKG'
-{
-  "name": "wallet-mcp-server",
-  "version": "0.1.0",
-  "type": "module",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "zod": "^3.25.0"
-  }
-}
+{ "type": "module" }
 PKG
 
-(cd "$MCP_DIR" && npm install --production --silent 2>/dev/null)
-ok "MCP server installed"
+ok "MCP server installed (self-contained, no dependencies)"
 
 # --- Install skills ---
 
@@ -113,16 +102,14 @@ fi
 
 if [ -n "$SKILLS_TARGET" ]; then
   info "Installing skills to $SKILLS_TARGET..."
-  mkdir -p "$SKILLS_TARGET/wallet" "$SKILLS_TARGET/wallet-claude-code"
+  mkdir -p "$SKILLS_TARGET/wallet"
   cp "$SRC_DIR/skills/wallet/SKILL.md" "$SKILLS_TARGET/wallet/SKILL.md"
-  cp "$SRC_DIR/skills/wallet-claude-code/SKILL.md" "$SKILLS_TARGET/wallet-claude-code/SKILL.md"
   ok "Skills installed"
 else
   warn "No .claude/ directory found in current project."
   warn "To install skills manually, copy from ~/.wallet/skills/"
-  mkdir -p "$INSTALL_DIR/skills/wallet" "$INSTALL_DIR/skills/wallet-claude-code"
+  mkdir -p "$INSTALL_DIR/skills/wallet"
   cp "$SRC_DIR/skills/wallet/SKILL.md" "$INSTALL_DIR/skills/wallet/SKILL.md"
-  cp "$SRC_DIR/skills/wallet-claude-code/SKILL.md" "$INSTALL_DIR/skills/wallet-claude-code/SKILL.md"
   info "Skills saved to $INSTALL_DIR/skills/ — copy them to your project's .claude/skills/ later."
 fi
 
@@ -169,6 +156,75 @@ fi
 export PATH="$BIN_DIR:$PATH"
 export WALLET_API_ORIGIN="$API_ORIGIN"
 
+# --- Configure Claude Desktop MCP ---
+
+CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/Claude"
+CLAUDE_CONFIG_FILE="$CLAUDE_CONFIG_DIR/claude_desktop_config.json"
+
+if [ "$(uname)" = "Darwin" ] && [ -d "$CLAUDE_CONFIG_DIR" ]; then
+  info "Configuring Claude Desktop MCP..."
+
+  if [ -f "$CLAUDE_CONFIG_FILE" ]; then
+    # Config file exists — check if wallet is already configured
+    if grep -q '"wallet"' "$CLAUDE_CONFIG_FILE" 2>/dev/null; then
+      ok "Claude Desktop already configured with Wallet MCP"
+    else
+      # Add wallet to existing config using python3 (available on all Macs)
+      if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json
+
+config_path = '$CLAUDE_CONFIG_FILE'
+mcp_path = '$MCP_DIR/index.js'
+
+with open(config_path, 'r') as f:
+    config = json.load(f)
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['wallet'] = {
+    'command': 'node',
+    'args': [mcp_path]
+}
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+"
+        ok "Added Wallet MCP to Claude Desktop config"
+      else
+        warn "Could not auto-configure Claude Desktop (python3 not found)."
+        warn "Add manually to: $CLAUDE_CONFIG_FILE"
+      fi
+    fi
+  else
+    # Create config file from scratch
+    cat > "$CLAUDE_CONFIG_FILE" << MCPCONFIG
+{
+  "mcpServers": {
+    "wallet": {
+      "command": "node",
+      "args": ["$MCP_DIR/index.js"]
+    }
+  }
+}
+MCPCONFIG
+    ok "Created Claude Desktop config with Wallet MCP"
+  fi
+elif [ "$(uname)" = "Darwin" ]; then
+  warn "Claude Desktop not found. To add MCP later, put this in:"
+  warn "  ~/Library/Application Support/Claude/claude_desktop_config.json"
+  echo ""
+  echo "  {"
+  echo "    \"mcpServers\": {"
+  echo "      \"wallet\": {"
+  echo "        \"command\": \"node\","
+  echo "        \"args\": [\"$MCP_DIR/index.js\"]"
+  echo "      }"
+  echo "    }"
+  echo "  }"
+fi
+
 # --- Done! ---
 
 echo ""
@@ -181,10 +237,12 @@ echo ""
 echo -e "  ${BLUE}1.${NC} Reload your shell:"
 echo -e "     ${YELLOW}source $PROFILE${NC}"
 echo ""
-echo -e "  ${BLUE}2.${NC} Run setup (opens browser for Google sign-in):"
-echo -e "     ${YELLOW}wallet setup${NC}"
+echo -e "  ${BLUE}2.${NC} For ${YELLOW}Claude Code${NC}:"
+echo -e "     Run ${YELLOW}wallet setup${NC} then say ${YELLOW}\"show my balances\"${NC}"
 echo ""
-echo -e "  ${BLUE}3.${NC} Then in Claude Code, just say: ${YELLOW}\"show my balances\"${NC}"
+echo -e "  ${BLUE}3.${NC} For ${YELLOW}Claude Desktop${NC}:"
+echo -e "     Restart the app, then ask Claude to use ${YELLOW}wallet_setup${NC}"
+echo -e "     (the browser will open for Google sign-in)"
 echo ""
 echo -e "  API: ${BLUE}$API_ORIGIN${NC}"
 echo ""
