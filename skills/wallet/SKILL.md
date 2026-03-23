@@ -32,7 +32,8 @@ curl -fsSL https://getwalletai.com/install.sh | bash
 | `wallet transactions [--limit N] [--since DATE] [--json]` | Recent transactions |
 | `wallet spending [--json]` | Spending summary for current month |
 | `wallet subscriptions [--json]` | Detect recurring subscriptions |
-| `wallet dashboard [--since DATE] [--all] [--output PATH] [--open] [--json]` | Generate local read-only finance dashboard |
+| `wallet dashboard [--since DATE] [--all] [--output PATH] [--open] [--json]` | Generate local finance dashboard (HTML) |
+| `wallet dashboard --snapshot [--since DATE] [--all] [--output PATH]` | Export raw snapshot JSON for custom dashboards |
 | `wallet categorize <txn_id> --category NAME [--json]` | Override one transaction's category |
 | `wallet category-rules [--json]` | List category rules |
 | `wallet add-category-rule --field F --pattern P --category C [--match-type T] [--priority N] [--json]` | Create a category rule |
