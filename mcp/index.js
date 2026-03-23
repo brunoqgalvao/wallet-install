@@ -21011,7 +21011,7 @@ function saveCredentials(creds) {
   writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), "utf-8");
 }
 var agentToken = process.env.WALLET_AGENT_TOKEN;
-var apiUrl = process.env.WALLET_API_URL ?? process.env.WALLET_API_ORIGIN ?? "https://api-production-a386.up.railway.app";
+var apiUrl = process.env.WALLET_API_URL ?? process.env.WALLET_API_ORIGIN ?? "https://getwalletai.com";
 if (!agentToken) {
   const saved = loadCredentials();
   if (saved) {
@@ -21045,7 +21045,7 @@ async function apiGet(path, params) {
     if (response.status === 401) {
       agentToken = void 0;
       throw new Error(
-        "Agent token is invalid or revoked. Use the wallet_setup tool to re-authenticate."
+        "Agent token is invalid or revoked. To fix this: call the wallet_setup tool to re-authenticate. This will open a browser window where the user can sign in with Google and reconnect their bank account."
       );
     }
     if (response.status === 403) {
@@ -21055,19 +21055,39 @@ async function apiGet(path, params) {
   }
   return response.json();
 }
-async function apiPost(path, body) {
+async function apiPost(path, body, options) {
   const url = new URL(path, apiUrl);
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json"
+  };
+  if (options?.auth) {
+    headers.Authorization = `Bearer ${requireToken()}`;
+  }
   const init = {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    }
+    headers
   };
   if (body !== void 0) {
     init.body = JSON.stringify(body);
   }
   const response = await fetch(url.toString(), init);
+  if (!response.ok) {
+    const respBody = await response.json().catch(() => ({}));
+    const message = respBody.error?.message ?? response.statusText;
+    throw new Error(`API error (${response.status}): ${message}`);
+  }
+  return response.json();
+}
+async function apiDelete(path) {
+  const url = new URL(path, apiUrl);
+  const response = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${requireToken()}`,
+      Accept: "application/json"
+    }
+  });
   if (!response.ok) {
     const respBody = await response.json().catch(() => ({}));
     const message = respBody.error?.message ?? response.statusText;
@@ -21199,7 +21219,7 @@ server.registerTool(
   "wallet_get_balances",
   {
     title: "Get Account Balances",
-    description: "Get current balances for all connected bank accounts. Returns accountId, accountName, institutionName, currencyCode, balance, and connectionLabel for each account. Requires balances.read scope. Run wallet_setup first if not authenticated.",
+    description: "Get current balances for all connected bank, credit-card, and investment accounts. Returns accountId, accountName, accountType, institutionName, currencyCode, lastFourDigits, balance, connectionLabel, and metadata for each account. Metadata can include bank details, credit-card limits/brand/due dates, and rich investment position fields. Requires balances.read scope. Run wallet_setup first if not authenticated.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
@@ -21215,7 +21235,7 @@ server.registerTool(
   "wallet_get_accounts",
   {
     title: "Get Connected Accounts",
-    description: "List all connected bank accounts. Returns id, name, type (checking/savings/credit_card/investment), institutionName, currencyCode, and connectionLabel. Requires accounts.read scope. Run wallet_setup first if not authenticated.",
+    description: "List all connected bank, credit-card, and investment accounts. Returns id, name, type (checking/savings/credit_card/investment), institutionName, currencyCode, lastFourDigits, and connectionLabel. Use this to separate multiple cards from the same institution. Requires accounts.read scope. Run wallet_setup first if not authenticated.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
@@ -21231,15 +21251,20 @@ server.registerTool(
   "wallet_get_transactions",
   {
     title: "Get Recent Transactions",
-    description: "Get recent transactions across all connected accounts. Returns bookedAt, description, merchantName, category, amount (negative=expense), currencyCode, accountName, connectionLabel. Requires transactions.read scope. Run wallet_setup first if not authenticated.",
+    description: "Get recent transactions across all connected accounts, including detailed credit-card and investment transactions. Returns bookedAt, purchaseAt, installmentAt, description, merchantName, providerCategory, effectiveCategory, category, categorySource, amount (negative=outflow, normalized to the account currency and typically BRL), currencyCode, originalAmount, originalCurrencyCode, cardLastFourDigits, accountName, accountType, connectionLabel, and metadata. Use category or effectiveCategory for analysis, and providerCategory when you need the raw bank/provider classification. Optionally pass since to fetch all transactions from a date onward instead of only the latest N. Metadata can include merchant data, payment data, credit-card installment details, original provider amounts, account-currency amounts, and investment movement details. Requires transactions.read scope. Run wallet_setup first if not authenticated.",
     inputSchema: {
-      limit: external_exports.number().int().min(1).max(200).default(25).describe("Max transactions to return (1-200, default 25)")
+      limit: external_exports.number().int().min(1).max(200).default(25).describe("Max transactions to return (1-200, default 25)"),
+      since: external_exports.string().optional().describe("Optional start date (YYYY-MM-DD or ISO timestamp) for fetching a date range")
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
-  async ({ limit }) => {
+  async ({ limit, since }) => {
     try {
-      return toolResult(await apiGet("/api/agent/transactions", { limit: String(limit) }));
+      return toolResult(
+        await apiGet("/api/agent/transactions", {
+          ...since ? { since } : { limit: String(limit) }
+        })
+      );
     } catch (error2) {
       return toolError(error2);
     }
@@ -21249,7 +21274,7 @@ server.registerTool(
   "wallet_get_spending_summary",
   {
     title: "Get Spending Summary",
-    description: "Get current month spending summary by category. Returns total spending and category breakdown. Only includes expenses (negative amounts). Requires transactions.read scope. Run wallet_setup first if not authenticated.",
+    description: "Get current month spending summary by category. Returns total spending and category breakdown using the effective category after Wallet overrides and category rules are applied. Only includes normalized expenses (negative amounts), excluding transfers and investment movements. Requires transactions.read scope. Run wallet_setup first if not authenticated.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
@@ -21262,16 +21287,138 @@ server.registerTool(
   }
 );
 server.registerTool(
+  "wallet_get_subscriptions",
+  {
+    title: "Detect Subscriptions",
+    description: "Detect recurring charges (subscriptions) across all connected accounts. Scans the full transaction history for periodic charges from the same merchant. Returns subscriptions in three buckets: current (charged within expected window), overdue (missed expected charge \u2014 possibly cancelled), and lapsed (no charge in 2+ cycles \u2014 likely cancelled). Each subscription includes merchant name, frequency (weekly/biweekly/monthly/quarterly/yearly), average amount, estimated monthly cost, status, daysSinceLastCharge, confidence level, first/last charge dates, effective category, and individual charge history. Results are candidates \u2014 if unsure about a detection, use wallet_get_transactions to inspect the individual charges and verify. Requires transactions.read scope. Run wallet_setup first if not authenticated.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  },
+  async () => {
+    try {
+      return toolResult(await apiGet("/api/agent/subscriptions"));
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
+  "wallet_get_category_rules",
+  {
+    title: "Get Category Rules",
+    description: "List the current transaction category rules for this user. Rules are matched in priority order and can target description, merchantName, or providerCategory using exact, contains, or prefix matching. Requires transactions.write scope. Run wallet_setup first if not authenticated.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  },
+  async () => {
+    try {
+      return toolResult(await apiGet("/api/agent/category-rules"));
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
+  "wallet_create_category_rule",
+  {
+    title: "Create Category Rule",
+    description: "Create a transaction categorization rule. Use this for recurring merchants or descriptions instead of overriding transactions one by one. Requires transactions.write scope. Run wallet_setup first if not authenticated.",
+    inputSchema: {
+      field: external_exports.enum(["description", "merchantName", "providerCategory"]),
+      matchType: external_exports.enum(["contains", "exact", "prefix"]).default("contains"),
+      pattern: external_exports.string().min(1).max(200),
+      category: external_exports.string().min(1).max(120),
+      priority: external_exports.number().int().min(0).max(1e3).default(100)
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  async ({ field, matchType, pattern, category, priority }) => {
+    try {
+      return toolResult(
+        await apiPost(
+          "/api/agent/category-rules",
+          { field, matchType, pattern, category, priority },
+          { auth: true }
+        )
+      );
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
+  "wallet_delete_category_rule",
+  {
+    title: "Delete Category Rule",
+    description: "Delete a transaction categorization rule by id. Requires transactions.write scope. Run wallet_setup first if not authenticated.",
+    inputSchema: {
+      ruleId: external_exports.string().min(1).describe("Rule id from wallet_get_category_rules")
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  async ({ ruleId }) => {
+    try {
+      return toolResult(await apiDelete(`/api/agent/category-rules/${encodeURIComponent(ruleId)}`));
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
+  "wallet_set_transaction_category",
+  {
+    title: "Set Transaction Category",
+    description: "Override the effective category for a single transaction by its Wallet transaction id. Pass category=null to clear the override and fall back to rules/provider category. Requires transactions.write scope. Run wallet_setup first if not authenticated.",
+    inputSchema: {
+      transactionId: external_exports.string().min(1),
+      category: external_exports.string().min(1).max(120).nullable().optional()
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  async ({ transactionId, category }) => {
+    try {
+      return toolResult(
+        await apiPost(
+          `/api/agent/transactions/${encodeURIComponent(transactionId)}/category`,
+          { category: category ?? null },
+          { auth: true }
+        )
+      );
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
   "wallet_get_context",
   {
     title: "Get Agent Context",
-    description: "Get this agent's context: enabled scopes, connected sources, and capabilities. Useful for checking what data this agent can access before making other calls. Run wallet_setup first if not authenticated.",
+    description: "Get this agent's context: agent name, connection type, and last use. Useful for a quick check of what data this agent can access. Run wallet_setup first if not authenticated.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
   async () => {
     try {
       return toolResult(await apiGet("/api/agent/context"));
+    } catch (error2) {
+      return toolError(error2);
+    }
+  }
+);
+server.registerTool(
+  "wallet_submit_feedback",
+  {
+    title: "Submit Feedback",
+    description: "Submit feedback, bug reports, or feature requests to the Wallet team. No special scope required \u2014 any authenticated agent can submit feedback. Run wallet_setup first if not authenticated.",
+    inputSchema: {
+      message: external_exports.string().min(1).max(2e3).describe("The feedback message"),
+      category: external_exports.string().max(100).optional().describe("Category: bug, feature, question, praise, other")
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  async ({ message, category }) => {
+    try {
+      return toolResult(await apiPost("/api/agent/feedback", { message, category }, { auth: true }));
     } catch (error2) {
       return toolError(error2);
     }
