@@ -807,38 +807,31 @@ async function subscriptionsCommand(args = [], apiOriginOverride) {
     return;
   }
   console.log(`Detected subscriptions: ${data.totalDetected}`);
-  console.log(`Active monthly estimate: ${formatCurrency(data.activeMonthlyEstimate)}`);
-  if (data.active.length > 0) {
-    console.log("\nActive:");
-    printTable(
-      ["Merchant", "Category", "Freq", "Monthly", "Charges", "Last", "Confidence"],
-      data.active.map((subscription) => [
-        subscription.merchant,
-        subscription.category ?? "-",
-        subscription.frequency,
-        formatCurrency(subscription.estimatedMonthlyAmount),
-        String(subscription.chargeCount),
-        subscription.lastChargeDate,
-        subscription.confidence
-      ])
-    );
+  console.log(`Current monthly estimate: ${formatCurrency(data.currentMonthlyEstimate)}`);
+  const subscriptionRows = (subs) => subs.map((s) => [
+    s.merchant,
+    s.category ?? "-",
+    s.frequency,
+    formatCurrency(s.estimatedMonthlyAmount),
+    String(s.chargeCount),
+    s.lastChargeDate,
+    `${s.daysSinceLastCharge}d ago`,
+    s.confidence
+  ]);
+  const columns = ["Merchant", "Category", "Freq", "Monthly", "Charges", "Last", "Since", "Confidence"];
+  if (data.current.length > 0) {
+    console.log("\nCurrent (charged within expected window):");
+    printTable(columns, subscriptionRows(data.current));
   }
-  if (data.inactive.length > 0) {
-    console.log("\nInactive:");
-    printTable(
-      ["Merchant", "Category", "Freq", "Monthly", "Charges", "Last", "Confidence"],
-      data.inactive.map((subscription) => [
-        subscription.merchant,
-        subscription.category ?? "-",
-        subscription.frequency,
-        formatCurrency(subscription.estimatedMonthlyAmount),
-        String(subscription.chargeCount),
-        subscription.lastChargeDate,
-        subscription.confidence
-      ])
-    );
+  if (data.overdue?.length > 0) {
+    console.log("\nOverdue (missed expected charge \u2014 possibly cancelled):");
+    printTable(columns, subscriptionRows(data.overdue));
   }
-  if (data.active.length === 0 && data.inactive.length === 0) {
+  if (data.lapsed.length > 0) {
+    console.log("\nLapsed (no charge in 2+ cycles \u2014 likely cancelled):");
+    printTable(columns, subscriptionRows(data.lapsed));
+  }
+  if (data.current.length === 0 && !data.overdue?.length && data.lapsed.length === 0) {
     console.log("No subscriptions detected.");
   }
 }
@@ -1540,7 +1533,7 @@ function generateDashboardHtml(snapshot) {
 
       const state = {
         tab: "overview",
-        subscriptionTab: "active",
+        subscriptionTab: "current",
         range: "12m",
         startDate: "",
         endDate: "",
@@ -1736,14 +1729,14 @@ function generateDashboardHtml(snapshot) {
         const expense = getExpenseTransactions(transactions).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
         const net = income - expense;
         const savingsRate = income > 0 ? (net / income) * 100 : 0;
-        const activeSubscriptions = snapshot.subscriptions.active.length;
+        const currentSubscriptions = snapshot.subscriptions.current.length;
 
         return {
           income,
           expense,
           net,
           savingsRate,
-          activeSubscriptions,
+          currentSubscriptions,
         };
       };
 
@@ -1897,7 +1890,7 @@ function generateDashboardHtml(snapshot) {
                 return '<tr>' +
                   '<td><strong>' + escapeHtml(subscription.merchant) + '</strong><span>' + subscription.chargeCount + ' charges \xB7 first ' + formatDate(subscription.firstChargeDate) + '</span></td>' +
                   '<td><strong>' + escapeHtml(subscription.category || 'Other') + '</strong><span>' + (subscription.amountChanged ? 'Amount changed' : 'Amount stable') + '</span></td>' +
-                  '<td><strong>' + escapeHtml(subscription.frequency) + '</strong><span>' + (subscription.active ? 'Active' : 'Inactive') + '</span></td>' +
+                  '<td><strong>' + escapeHtml(subscription.frequency) + '</strong><span>' + escapeHtml(subscription.status || (subscription.active ? 'active' : 'inactive')) + ' \xB7 ' + subscription.daysSinceLastCharge + 'd ago</span></td>' +
                   '<td class="amount-negative">' + formatCurrency(subscription.estimatedMonthlyAmount) + '</td>' +
                   '<td><strong>' + formatDate(subscription.lastChargeDate) + '</strong><span>Average ' + formatCurrency(subscription.averageAmount) + '</span></td>' +
                   '<td><span class="source-tag"><span class="dot" style="background:' + confidenceColor(subscription.confidence) + '"></span>' + escapeHtml(subscription.confidence) + '</span></td>' +
@@ -1947,7 +1940,7 @@ function generateDashboardHtml(snapshot) {
             },
           ]),
         ).values()].sort((a, b) => a.label.localeCompare(b.label));
-        const subscriptions = state.subscriptionTab === "active" ? snapshot.subscriptions.active : snapshot.subscriptions.inactive;
+        const subscriptions = state.subscriptionTab === "current" ? snapshot.subscriptions.current : state.subscriptionTab === "overdue" ? (snapshot.subscriptions.overdue || []) : snapshot.subscriptions.lapsed;
         const filteredSubscriptions = subscriptions.filter((subscription) => {
           const search = normalizeText(state.search);
           if (!search) return true;
@@ -2054,7 +2047,7 @@ function generateDashboardHtml(snapshot) {
               <div class="card kpi">
                 <span class="kpi-label">Savings rate</span>
                 <div class="kpi-value">\${Number.isFinite(metrics.savingsRate) ? metrics.savingsRate.toFixed(1) + "%" : "\u2014"}</div>
-                <div class="kpi-note">\${snapshot.subscriptions.active.length} active subscriptions, \${formatCurrency(snapshot.subscriptions.activeMonthlyEstimate)} monthly estimate.</div>
+                <div class="kpi-note">\${snapshot.subscriptions.current.length} current subscriptions, \${formatCurrency(snapshot.subscriptions.currentMonthlyEstimate)} monthly estimate.</div>
               </div>
             </div>
 
@@ -2171,24 +2164,24 @@ function generateDashboardHtml(snapshot) {
           <section class="tab-panel \${state.tab === "subscriptions" ? "active" : ""}" data-panel="subscriptions">
             <div class="subscriptions-grid">
               <div class="card kpi">
-                <span class="kpi-label">Active subscriptions</span>
-                <div class="kpi-value">\${snapshot.subscriptions.active.length}</div>
-                <div class="kpi-note">Recurring charges that still look current.</div>
+                <span class="kpi-label">Current subscriptions</span>
+                <div class="kpi-value">\${snapshot.subscriptions.current.length}</div>
+                <div class="kpi-note">Charged within the expected window.</div>
               </div>
               <div class="card kpi kpi-negative">
-                <span class="kpi-label">Active monthly burn</span>
-                <div class="kpi-value">\${formatCurrency(snapshot.subscriptions.activeMonthlyEstimate)}</div>
-                <div class="kpi-note">Estimated monthly load from active recurring charges.</div>
+                <span class="kpi-label">Current monthly burn</span>
+                <div class="kpi-value">\${formatCurrency(snapshot.subscriptions.currentMonthlyEstimate)}</div>
+                <div class="kpi-note">Estimated monthly load from current recurring charges.</div>
+              </div>
+              <div class="card kpi" style="color:#c78d2b;">
+                <span class="kpi-label">Overdue</span>
+                <div class="kpi-value">\${(snapshot.subscriptions.overdue || []).length}</div>
+                <div class="kpi-note">Missed expected charge \u2014 possibly cancelled.</div>
               </div>
               <div class="card kpi">
-                <span class="kpi-label">Inactive candidates</span>
-                <div class="kpi-value">\${snapshot.subscriptions.inactive.length}</div>
-                <div class="kpi-note">Charges that look recurring historically but may have stopped.</div>
-              </div>
-              <div class="card kpi">
-                <span class="kpi-label">Total detected</span>
-                <div class="kpi-value">\${snapshot.subscriptions.totalDetected}</div>
-                <div class="kpi-note">Across active and inactive recurring charges.</div>
+                <span class="kpi-label">Lapsed</span>
+                <div class="kpi-value">\${snapshot.subscriptions.lapsed.length}</div>
+                <div class="kpi-note">No charge in 2+ cycles \u2014 likely cancelled.</div>
               </div>
             </div>
 
@@ -2199,8 +2192,9 @@ function generateDashboardHtml(snapshot) {
                   <div class="card-subtitle">Detection is heuristic. Use this view to review the recurring merchants and their estimated monthly footprint.</div>
                 </div>
                 <div class="subtabs">
-                  <button class="subtab-chip \${state.subscriptionTab === "active" ? "active" : ""}" data-subscriptions="active">Active</button>
-                  <button class="subtab-chip \${state.subscriptionTab === "inactive" ? "active" : ""}" data-subscriptions="inactive">Inactive</button>
+                  <button class="subtab-chip \${state.subscriptionTab === "current" ? "active" : ""}" data-subscriptions="current">Current</button>
+                  <button class="subtab-chip \${state.subscriptionTab === "overdue" ? "active" : ""}" data-subscriptions="overdue">Overdue</button>
+                  <button class="subtab-chip \${state.subscriptionTab === "lapsed" ? "active" : ""}" data-subscriptions="lapsed">Lapsed</button>
                 </div>
               </div>
               \${createSubscriptionsTable(filteredSubscriptions)}
@@ -2296,7 +2290,7 @@ function generateDashboardHtml(snapshot) {
             state.account = "all";
             state.search = "";
             state.selectedCategory = null;
-            state.subscriptionTab = "active";
+            state.subscriptionTab = "current";
             state.tab = "overview";
             render();
           });
@@ -2341,8 +2335,9 @@ function resolveDashboardSince(args) {
 }
 async function dashboardCommand(args = [], apiOriginOverride) {
   const jsonOutput = args.includes("--json");
+  const snapshotOnly = args.includes("--snapshot");
   const openDashboard = args.includes("--open");
-  const outputPath = resolve2(readFlagValue2(args, "--output") ?? "wallet-dashboard.html");
+  const outputPath = resolve2(readFlagValue2(args, "--output") ?? (snapshotOnly ? "wallet-snapshot.json" : "wallet-dashboard.html"));
   const fetchedSince = resolveDashboardSince(args);
   const creds = loadCredentials();
   if (!creds) {
@@ -2371,6 +2366,20 @@ async function dashboardCommand(args = [], apiOriginOverride) {
     generatedAt,
     fetchedSince
   });
+  if (snapshotOnly) {
+    mkdirSync3(dirname(outputPath), { recursive: true });
+    writeFileSync3(outputPath, JSON.stringify(snapshot, null, 2), "utf8");
+    if (jsonOutput) {
+      printJson({ outputPath, fetchedSince, generatedAt, transactionCount: snapshot.transactions.length });
+      return;
+    }
+    console.log(`Snapshot written to ${outputPath}`);
+    console.log(
+      `Included ${snapshot.transactions.length} transactions since ${fetchedSince} and ${snapshot.subscriptions.totalDetected} subscription candidates.`
+    );
+    console.log("Use this JSON to build a custom dashboard \u2014 or let your agent do it.");
+    return;
+  }
   const html = generateDashboardHtml(snapshot);
   mkdirSync3(dirname(outputPath), { recursive: true });
   writeFileSync3(outputPath, html, "utf8");
@@ -2383,7 +2392,7 @@ async function dashboardCommand(args = [], apiOriginOverride) {
       fetchedSince,
       generatedAt,
       transactionCount: snapshot.transactions.length,
-      activeSubscriptionCount: snapshot.subscriptions.active.length,
+      currentSubscriptionCount: snapshot.subscriptions.current.length,
       totalDetectedSubscriptions: snapshot.subscriptions.totalDetected,
       opened: openDashboard
     });
