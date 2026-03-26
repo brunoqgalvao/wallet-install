@@ -1679,6 +1679,55 @@ async function deleteCategoryRuleCommand(args, apiOriginOverride) {
   console.log(`Deleted category rule ${data.deletedRuleId}`);
 }
 
+// src/commands/feedback.ts
+var CATEGORIES = ["bug", "feature", "question", "other"];
+async function feedbackCommand(args = [], apiOriginOverride) {
+  const jsonOutput = args.includes("--json");
+  const creds = loadCredentials();
+  if (!creds) {
+    console.error("Not authenticated. Run: wallet setup");
+    process.exit(1);
+  }
+  const catIdx = args.indexOf("--category");
+  const category = catIdx !== -1 ? args[catIdx + 1] : void 0;
+  if (category && !CATEGORIES.includes(category)) {
+    console.error(`Invalid category: ${category}`);
+    console.error(`Valid categories: ${CATEGORIES.join(", ")}`);
+    process.exit(1);
+  }
+  const message = args.filter((a, i) => {
+    if (a === "--json") return false;
+    if (a === "--category") return false;
+    if (i > 0 && args[i - 1] === "--category") return false;
+    return true;
+  }).join(" ").trim();
+  if (!message) {
+    console.error("Usage: wallet feedback <message> [--category bug|feature|question|other] [--json]");
+    console.error("\nExamples:");
+    console.error('  wallet feedback "transactions are missing from Nubank"');
+    console.error('  wallet feedback --category bug "dashboard crashes on empty accounts"');
+    console.error('  wallet feedback --category feature "add investment tracking"');
+    process.exit(1);
+  }
+  if (message.length > 2e3) {
+    console.error(`Message too long (${message.length} chars). Max: 2000.`);
+    process.exit(1);
+  }
+  const origin = resolveApiOrigin({
+    apiOriginOverride,
+    storedApiOrigin: creds.apiOrigin
+  });
+  const body = { message };
+  if (category) body.category = category;
+  const data = await apiPost(origin, "/api/agent/feedback", body, creds.agentToken);
+  if (jsonOutput) {
+    printJson(data);
+    return;
+  }
+  console.log("Feedback submitted. Thanks!");
+  if (category) console.log(`Category: ${category}`);
+}
+
 // src/commands/update.ts
 import { execSync } from "child_process";
 import { homedir as homedir3 } from "os";
@@ -1766,6 +1815,7 @@ Commands:
   category-rules List category rules [--json]
   add-category-rule    Create a category rule [--field F --pattern P --category C] [--match-type T] [--priority N] [--json]
   delete-category-rule Delete a category rule by id [--json]
+  feedback       Submit feedback or bug report [--category bug|feature|question|other] [--json]
   update         Update CLI and skill to latest version
   logout         Remove stored credentials
 
@@ -1778,6 +1828,7 @@ Examples:
   wallet subscriptions --json
   wallet dashboard --open
   wallet categorize txn_123 --category Food
+  wallet feedback "add investment tracking" --category feature
 
 Environment:
   WALLET_API_ORIGIN    API endpoint (default: ${DEFAULT_API_ORIGIN})
@@ -1829,6 +1880,9 @@ async function main() {
         break;
       case "delete-category-rule":
         await deleteCategoryRuleCommand(args, apiOriginOverride);
+        break;
+      case "feedback":
+        await feedbackCommand(args, apiOriginOverride);
         break;
       case "update":
         await updateCommand(args, apiOriginOverride);
