@@ -709,7 +709,10 @@ async function transactionsCommand(args, apiOriginOverride) {
     apiOriginOverride,
     storedApiOrigin: creds.apiOrigin
   });
-  const path = since ? `/api/agent/transactions?since=${encodeURIComponent(since)}` : `/api/agent/transactions?limit=${limit}`;
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (since) params.set("since", since);
+  const path = `/api/agent/transactions?${params.toString()}`;
   const data = await apiGet(
     origin,
     path,
